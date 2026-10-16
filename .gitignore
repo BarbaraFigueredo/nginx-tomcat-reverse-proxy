@@ -1,0 +1,10 @@
+# NetBeans build cache (intermediate classes/jars resolved locally by the IDE).
+# JavaWeb1/dist/ROOT.war IS committed on purpose, so the project runs right
+# after a clone without needing NetBeans or Ant installed.
+JavaWeb1/build/
+
+# NetBeans local/private project settings
+JavaWeb1/nbproject/private/
+
+# OS / editor
+.DS_Store

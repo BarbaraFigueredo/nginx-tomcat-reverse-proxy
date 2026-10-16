@@ -12,6 +12,7 @@ A ideia aqui não é construir uma aplicação nova, e sim reproduzir — em esc
 - Logging customizado no Nginx, registrando qual upstream atendeu cada requisição e o tempo de resposta
 - Um **health check endpoint** isolado (`/nginx-health`), padrão comum em ambientes com Kubernetes/orquestradores que fazem probes de liveness
 - Uma **aplicação Java (Spring MVC) real** sendo servida identicamente pelas duas instâncias de Tomcat, não só as páginas de exemplo do Tomcat
+- **Observabilidade com Prometheus + Grafana**: métricas do Nginx coletadas e visualizadas em dashboard, incluindo o cenário de "serviço caiu" refletindo em tempo real na métrica
 
 ## Arquitetura
 
@@ -38,6 +39,7 @@ O Nginx recebe todo o tráfego e decide, requisição por requisição, para qua
 | `docker-compose.yml` | Define os três serviços (`tomcat1`, `tomcat2`, `nginx`) e como eles se conectam |
 | `default.conf` | Configuração do Nginx: upstream, proxy, headers e health check |
 | `JavaWeb1/` | Aplicação Spring MVC que os dois Tomcats servem |
+| `prometheus.yml` | Configuração do Prometheus: de onde ele coleta métricas |
 
 ## A aplicação: JavaWeb1
 
@@ -113,6 +115,57 @@ docker compose logs -f nginx
 ```
 
 O `log_format detalhado` configurado no `default.conf` registra, para cada requisição: IP do cliente, status HTTP, qual upstream respondeu e o tempo de resposta.
+
+## Monitoramento: Prometheus + Grafana
+
+Além do balanceamento em si, o projeto expõe métricas do Nginx e as deixa visualizáveis num dashboard — o fluxo é:
+
+```
+Nginx (stub_status) → nginx-exporter → Prometheus → Grafana
+```
+
+- O Nginx expõe contadores simples (conexões ativas, total de requisições) em `/stub_status` ([default.conf](default.conf))
+- O **nginx-exporter** lê esse endpoint e traduz pro formato que o Prometheus entende
+- O **Prometheus** coleta (`scrape`) essas métricas a cada 5s ([prometheus.yml](prometheus.yml)) e fica acessível em `http://localhost:9091`
+- O **Grafana** (`http://localhost:3000`, login `admin`/`admin`) consome o Prometheus como fonte de dados e exibe gráficos
+
+### Configurando o Grafana (primeira vez)
+
+Acesse `http://localhost:3000`, login `admin` / `admin` (ele vai pedir pra trocar a senha no primeiro login manual).
+
+Se você estiver subindo o projeto do zero, o data source e o dashboard precisam ser criados uma vez. Dá pra fazer pela UI, ou criar o data source rapidinho via API:
+
+```bash
+curl -s -u admin:admin -X POST http://localhost:3000/api/datasources \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Prometheus","type":"prometheus","url":"http://prometheus:9090","access":"proxy","isDefault":true}'
+```
+
+Pela UI, o caminho equivalente é: **Connections → Data sources → Add data source → Prometheus**, URL `http://prometheus:9090` (nome do serviço na rede do Compose, não `localhost`), **Save & test**. Depois crie um dashboard com um painel para cada consulta:
+- `nginx_up` → `1` = Nginx no ar, `0` = fora
+- `nginx_connections_active` → conexões ativas agora
+- `rate(nginx_http_requests_total[1m])` → requisições por segundo
+
+> Se preferir não montar na mão, existe dashboard pronto pra "NGINX Prometheus exporter" em [grafana.com/dashboards](https://grafana.com/grafana/dashboards/).
+
+### Testando o monitoramento
+
+```bash
+# confere se o Prometheus está coletando o Nginx (deve aparecer "UP")
+curl -s http://localhost:9091/api/v1/targets
+
+# gera carga e observa o gráfico de requisições subir no Grafana
+for i in $(seq 1 200); do curl -s -o /dev/null http://localhost:9090; done
+
+# derruba o Nginx e observa nginx_up cair pra 0
+docker compose stop nginx
+curl -s 'http://localhost:9091/api/v1/query?query=nginx_up'
+
+# religa e confere que volta pra 1
+docker compose start nginx
+```
+
+> **Nota:** o Nginx é montado via *bind mount* de um arquivo único (`default.conf`). Se você editar esse arquivo com o container já rodando, é preciso recarregar a configuração — `docker compose exec nginx nginx -s reload` — ou recriar o container (`docker compose up -d --force-recreate nginx`); só rodar `docker compose up -d` de novo não é suficiente, porque o Compose não recria um container cujo serviço não mudou na definição do `docker-compose.yml`.
 
 ## Encerrando
 
